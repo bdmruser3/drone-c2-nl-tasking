@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Mission Command Bridge</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="topbar-left">
+        <h1>NL Tasking → Structured Mission Command</h1>
+        <span class="pill pill-label">C2 bridge · AO Singapore</span>
+      </div>
+      <div class="topbar-right">
+        <span class="pill">schema v1 · 5 fields</span>
+        <span class="pill">few-shot k=3</span>
+        <span class="pill">repair retries 1</span>
+      </div>
+    </header>
+
+    <main class="grid">
+      <section class="col col-left">
+        <p class="section-label">Operator tasking</p>
+        <div class="card">
+          <textarea id="tasking" rows="3" placeholder="Launch 4 drones from Alpha, survey Sector 7, land at nearest LZ with clear approach."></textarea>
+          <div class="row">
+            <button id="run-btn" class="btn btn-primary">Parse tasking</button>
+            <button id="clear-btn" class="btn btn-ghost">Clear</button>
+          </div>
+        </div>
+
+        <p class="section-label">Swarm configuration</p>
+        <div class="card">
+          <div class="field">
+            <span class="field-label">Drone type</span>
+            <div class="row" id="type-opts"></div>
+          </div>
+          <div class="field">
+            <span class="field-label" id="count-note">Count — manual</span>
+            <div class="row">
+              <input type="range" id="count-slider" min="1" max="12" value="4" />
+              <span class="count-val" id="count-val">4</span>
+            </div>
+          </div>
+          <div class="field">
+            <span class="field-label">Formation</span>
+            <div class="grid-2" id="form-opts"></div>
+          </div>
+          <button id="manual-deploy-btn" class="btn btn-outline">Deploy swarm manually</button>
+          <p class="hint" id="manual-hint">Manual deploy bypasses the NL pipeline and launches with these settings to Sector 5.</p>
+        </div>
+
+        <p class="section-label">Test taskings</p>
+        <div class="stack" id="samples"></div>
+      </section>
+
+      <section class="col col-mid">
+        <div class="row row-between">
+          <p class="section-label">Area of operations — Singapore</p>
+          <span class="hint">◆ base · ◌ landing zone · S1–S9 sectors</span>
+        </div>
+        <div class="map-wrap">
+          <div id="map"></div>
+          <div id="mission-banner" class="mission-banner hidden">
+            <span class="dot" id="mission-dot"></span>
+            <span id="mission-label"></span>
+          </div>
+        </div>
+
+        <div id="verdict" class="card verdict hidden">
+          <div class="verdict-head">
+            <span id="verdict-title" class="verdict-title"></span>
+            <span id="verdict-meta" class="hint"></span>
+          </div>
+          <p id="verdict-note" class="verdict-note hidden"></p>
+          <div class="fields-grid" id="fields-grid"></div>
+          <div id="dispatch-row" class="row hidden">
+            <button id="dispatch-btn" class="btn btn-primary btn-block">Dispatch — deploy swarm</button>
+          </div>
+          <div id="review-row" class="row hidden">
+            <button id="flag-btn" class="btn btn-danger btn-block">Route to human review</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="col col-right">
+        <p class="section-label">Pipeline trace</p>
+        <div class="card" id="stages"></div>
+
+        <div class="row row-between">
+          <p class="section-label">Command log</p>
+          <span class="hint" id="log-meta"></span>
+        </div>
+        <div class="stack" id="log">
+          <div class="card">
+            <p class="hint">No taskings processed yet. Parse a tasking or deploy manually to see commands routed here.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="map.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

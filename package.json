@@ -1,0 +1,13 @@
+{
+  "name": "drone-c2-nl-tasking",
+  "version": "1.0.0",
+  "description": "Demo UI: free-text mission tasking to structured C2 command via LLM",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  }
+}
