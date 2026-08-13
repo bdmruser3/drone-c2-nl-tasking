@@ -27,6 +27,11 @@ body {
 
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 
+/* Quadcopter rotor blades (see droneSvg in map.js) */
+@keyframes mm-spin { to { transform: rotate(360deg); } }
+.mm-rotor { transform-box: fill-box; transform-origin: center; animation: mm-spin .22s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .mm-rotor { animation: none; } }
+
 .app { min-height: 100vh; padding: 20px 24px 40px; font-size: 15px; line-height: 1.5; }
 
 .topbar {

@@ -237,7 +237,7 @@ async function deploy(cmd) {
   const landPath = routeAroundObstacles([[target.lat, target.lng], [lz.lat, lz.lng]]);
   const fullPath = transitPath.concat(landPath.slice(1));
 
-  const M = 0.0016;
+  const M = 26; // formation spacing in screen px — see MissionMap.pixelOffset
   const T = { launch: 1.5, transit: 6.5, station: 10.5, land: 14, end: 15 };
 
   MissionMap.setMission({ target: [target.lat, target.lng], label: target.label, path: fullPath, lz: [lz.lat, lz.lng] });
@@ -268,7 +268,9 @@ async function deploy(cmd) {
     for (let i = 0; i < n; i++) {
       let o = offsetOf(formation, i, n, M * scale);
       if (rot) { const c = Math.cos(rot), s = Math.sin(rot); o = { x: o.x * c - o.y * s, y: o.x * s + o.y * c }; }
-      drones.push({ lat: cx + o.y, lng: cy + o.x, color: type.dot });
+      // o.y is "north-positive"; screen y grows downward, hence the flip.
+      const [lat, lng] = MissionMap.pixelOffset([cx, cy], o.x, -o.y);
+      drones.push({ lat, lng, color: type.dot });
     }
     MissionMap.setDrones(drones);
     if (phase !== lastPhase) { lastPhase = phase; state.missionLabel = desc + ' — ' + phase; renderMissionBanner(); }

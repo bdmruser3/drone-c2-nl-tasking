@@ -72,6 +72,14 @@ const MissionMap = (() => {
     });
   }
 
+  // Shift a latlng by a screen-pixel offset at the current zoom, so formation
+  // spacing stays legible instead of collapsing to sub-pixel distances.
+  function pixelOffset(latlng, dx, dy) {
+    const p = map.latLngToContainerPoint(latlng);
+    const q = map.containerPointToLatLng([p.x + dx, p.y + dy]);
+    return [q.lat, q.lng];
+  }
+
   function setMission(mission) {
     missionLayer.clearLayers();
     if (!mission) return;
@@ -81,22 +89,48 @@ const MissionMap = (() => {
     L.circleMarker(mission.lz, { radius: 9, color: '#7fae6a', weight: 2, fillOpacity: 0.1 }).addTo(missionLayer);
   }
 
+  // Top-down quadcopter: X frame, four rotor discs with a spinning blade, body
+  // pod with a lens dot. Blades spin via CSS (see .mm-rotor) so the animation
+  // costs nothing per frame — setDrones runs on every rAF tick.
+  const DRONE_PX = 22;
+  const HUBS = [[4.6, 4.6], [17.4, 4.6], [4.6, 17.4], [17.4, 17.4]];
+
+  function droneSvg(color) {
+    const rotors = HUBS.map(([cx, cy], i) => `
+      <circle cx="${cx}" cy="${cy}" r="3.6" fill="${color}" fill-opacity=".16" stroke="${color}" stroke-opacity=".65" stroke-width=".8"/>
+      <line class="mm-rotor" style="animation-delay:${i * 0.05}s" x1="${cx - 3.3}" y1="${cy}" x2="${cx + 3.3}" y2="${cy}" stroke="${color}" stroke-width="1.1" stroke-linecap="round"/>`).join('');
+    return `<svg width="${DRONE_PX}" height="${DRONE_PX}" viewBox="0 0 22 22" style="overflow:visible;filter:drop-shadow(0 0 2px #17120e)">
+      <path d="M4.6 4.6 17.4 17.4 M17.4 4.6 4.6 17.4" stroke="${color}" stroke-width="1.5" stroke-linecap="round" opacity=".9"/>
+      ${rotors}
+      <rect x="8" y="8" width="6" height="6" rx="1.8" fill="${color}"/>
+      <circle cx="11" cy="11" r="1.1" fill="#17120e" fill-opacity=".65"/>
+    </svg>`;
+  }
+
   function setDrones(drones) {
     while (droneMarkers.length > drones.length) {
       const m = droneMarkers.pop();
       droneLayer.removeLayer(m);
     }
     drones.forEach((d, i) => {
+      const pos = [d.lat, d.lng];
       if (!droneMarkers[i]) {
-        droneMarkers[i] = L.circleMarker([d.lat, d.lng], { radius: 5, color: d.color, weight: 2, fillOpacity: 0.9, fillColor: d.color }).addTo(droneLayer);
+        const marker = L.marker(pos, { icon: divIcon(droneSvg(d.color), [DRONE_PX, DRONE_PX]), interactive: false });
+        marker._mmColor = d.color;
+        droneMarkers[i] = marker.addTo(droneLayer);
       } else {
-        droneMarkers[i].setLatLng([d.lat, d.lng]);
-        droneMarkers[i].setStyle({ color: d.color, fillColor: d.color });
+        droneMarkers[i].setLatLng(pos);
+        // Rebuilding the icon restarts the rotor animation, so only on a real
+        // colour change (drone type switched), never every frame.
+        if (droneMarkers[i]._mmColor !== d.color) {
+          droneMarkers[i]._mmColor = d.color;
+          droneMarkers[i].setIcon(divIcon(droneSvg(d.color), [DRONE_PX, DRONE_PX]));
+        }
       }
     });
   }
 
   function getMap() { return map; }
 
-  return { init, setStatic, setObstacles, setMission, setDrones, getMap };
+  return { init, setStatic, setObstacles, setMission, setDrones, pixelOffset, getMap };
 })();
