@@ -13,8 +13,8 @@ const STAGE_NAMES = ['Prompt assembly', 'Structured generation', 'Schema validat
 const SCHEMA_PROMPT = `{
   "drone_count": integer >= 1,
   "origin": string | null,
-  "task_type": one of ${JSON.stringify(TASK_TYPES)},
-  "target_sector": string,
+  "task_type": one of ${JSON.stringify(TASK_TYPES)} | null,
+  "target_sector": string | null,
   "landing_constraint": one of ${JSON.stringify(LANDING)},
   "confidence": "high" | "low",
   "ambiguous_fields": array of field names left ambiguous by the source text
@@ -45,10 +45,49 @@ Rules:
 
 ${FEWSHOT}`;
 
+// Reasoning models on this gateway prefix the answer with a <think> block that
+// often contains a JSON draft. Drop the reasoning before looking for the answer.
+function stripReasoning(text) {
+  let s = String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, ' ');
+  const close = s.lastIndexOf('</think>');
+  return close === -1 ? s : s.slice(close + '</think>'.length);
+}
+
+// Every balanced top-level {...} run, string-aware so braces inside values
+// don't throw off the depth count.
+function braceRuns(text) {
+  const runs = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '{') continue;
+    let depth = 0, inStr = false, esc = false;
+    for (let j = i; j < text.length; j++) {
+      const ch = text[j];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === '\\') esc = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') inStr = true;
+      else if (ch === '{') depth++;
+      else if (ch === '}' && --depth === 0) {
+        runs.push(text.slice(i, j + 1));
+        i = j;
+        break;
+      }
+    }
+  }
+  return runs;
+}
+
 function extractJson(text) {
-  const m = String(text || '').match(/\{[\s\S]*\}/);
-  if (!m) return null;
-  try { return JSON.parse(m[0]); } catch (e) { return null; }
+  const runs = braceRuns(stripReasoning(text));
+  // Last parseable wins: if a think block was left unclosed, its draft survives
+  // stripping, and the real answer is always the one after the reasoning.
+  for (let i = runs.length - 1; i >= 0; i--) {
+    try { return JSON.parse(runs[i]); } catch (e) { /* try the one before it */ }
+  }
+  return null;
 }
 
 function validate(obj) {
@@ -61,7 +100,9 @@ function validate(obj) {
   } else if (!Number.isInteger(dc) || dc < 1) errs.push('drone_count must be an integer >= 1');
   if (!('origin' in obj)) errs.push('origin missing (use null when unstated)');
   else if (obj.origin !== null && typeof obj.origin !== 'string') errs.push('origin must be a string or null');
-  if (!TASK_TYPES.includes(obj.task_type)) errs.push('task_type must be one of ' + TASK_TYPES.join(', '));
+  if (obj.task_type === null || obj.task_type === undefined) {
+    if (!amb.includes('task_type')) errs.push('task_type is null but not listed in ambiguous_fields');
+  } else if (!TASK_TYPES.includes(obj.task_type)) errs.push('task_type must be one of ' + TASK_TYPES.join(', '));
   if (typeof obj.target_sector !== 'string' || !obj.target_sector.trim()) {
     if (!amb.includes('target_sector')) errs.push('target_sector must be a non-empty string');
   }
