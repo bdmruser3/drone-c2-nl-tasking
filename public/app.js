@@ -344,6 +344,17 @@ function render() {
   renderMissionBanner();
 }
 
+function switchTab(name) {
+  const mission = name === 'mission';
+  $('view-mission').classList.toggle('hidden', !mission);
+  $('view-diagnostics').classList.toggle('hidden', mission);
+  $('tab-mission').classList.toggle('active', mission);
+  $('tab-diagnostics').classList.toggle('active', !mission);
+  if (mission) {
+    setTimeout(() => { const m = MissionMap.getMap(); if (m) m.invalidateSize(); }, 0);
+  }
+}
+
 // ---------- wiring ----------
 document.addEventListener('DOMContentLoaded', () => {
   MissionMap.init('map');
@@ -362,6 +373,9 @@ document.addEventListener('DOMContentLoaded', () => {
   $('run-btn').addEventListener('click', run);
   $('clear-btn').addEventListener('click', () => { state.input = ''; $('tasking').value = ''; reset(); render(); });
   $('count-slider').addEventListener('input', (e) => { state.count = parseInt(e.target.value, 10) || 1; renderCount(); });
+
+  $('tab-mission').addEventListener('click', () => switchTab('mission'));
+  $('tab-diagnostics').addEventListener('click', () => switchTab('diagnostics'));
 
   $('manual-deploy-btn').addEventListener('click', () => {
     const lastTarget = state.result && state.result.target_sector && !isFlagged() ? state.result.target_sector : 'Sector 5';

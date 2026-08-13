@@ -79,5 +79,7 @@ const MissionMap = (() => {
     });
   }
 
-  return { init, setStatic, setMission, setDrones };
+  function getMap() { return map; }
+
+  return { init, setStatic, setMission, setDrones, getMap };
 })();
