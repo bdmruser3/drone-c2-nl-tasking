@@ -1,4 +1,4 @@
-const STAGE_NAMES = ['Prompt assembly', 'Structured generation', 'Schema validation', 'Repair re-prompt', 'Routing'];
+const STAGE_NAMES = ['Prompt assembly', 'Structured generation', 'Schema validation', 'Repair re-prompt', 'Location resolution', 'Routing'];
 const C = { ok: '#7fae6a', run: '#e2703a', fail: '#e5695c', idle: '#6d5c4e', muted: '#a49383', fg: '#f0e8e0' };
 
 const TYPES = [
@@ -19,30 +19,21 @@ const SAMPLES = [
   { n: '3', text: 'Get a few drones over to Sector 9 for recon.', expect: 'Expect: flagged — ambiguous drone count' },
 ];
 
-const BASES = { Alpha: { lat: 1.387, lng: 103.708 }, Bravo: { lat: 1.358, lng: 103.909 } };
-const LZS = [
-  { tag: 'LZ-1 Kranji', lat: 1.425, lng: 103.755, clear: true, note: 'clear approach' },
-  { tag: 'LZ-2 Marina', lat: 1.28, lng: 103.871, clear: false, note: 'obstructed' },
-  { tag: 'LZ-3 Changi', lat: 1.345, lng: 104.005, clear: true, note: 'clear approach' },
-  { tag: 'LZ-4 Sentosa', lat: 1.249, lng: 103.83, clear: true, note: 'clear approach' },
-];
-const GRID = { lat0: 1.235, lat1: 1.455, lng0: 103.62, lng1: 104.04 };
-const SECTORS = [];
-for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) {
-  const dLat = (GRID.lat1 - GRID.lat0) / 3, dLng = (GRID.lng1 - GRID.lng0) / 3;
-  SECTORS.push({ n: r * 3 + c + 1, lat1: GRID.lat1 - r * dLat, lat0: GRID.lat1 - (r + 1) * dLat, lng0: GRID.lng0 + c * dLng, lng1: GRID.lng0 + (c + 1) * dLng });
-}
-const PERIMETER = [[1.448, 103.65], [1.44, 103.72], [1.452, 103.78], [1.44, 103.85], [1.428, 103.92], [1.42, 103.99]];
+// Place data now lives in ao.js, shared verbatim with the server so the map, the prompt
+// and the validator cannot disagree about which places exist.
+const { BASES, LZS, SECTORS, PERIMETER, LANDMARKS } = AO;
+
+//: Where a manual deploy goes when no parsed command is on screen. An explicit default,
+//: not a lookup miss — resolveTarget() no longer invents a location for unknown names.
+const MANUAL_DEFAULT_TARGET = 'Sector 5';
 
 function resolveTarget(name) {
-  const s = String(name || '');
-  const m = /(\d)/.exec(s);
-  if (/sector/i.test(s) && m) {
-    const sec = SECTORS[parseInt(m[1], 10) - 1];
-    if (sec) return { lat: (sec.lat0 + sec.lat1) / 2, lng: (sec.lng0 + sec.lng1) / 2, label: 'SECTOR ' + m[1] };
-  }
-  if (/north|perimeter/i.test(s)) return { lat: 1.443, lng: 103.8, label: 'NORTH PERIMETER' };
-  return { lat: 1.345, lng: 103.83, label: s ? s.toUpperCase() : 'SECTOR 5' };
+  const hit = AO.resolvePlace(name);
+  if (hit) return hit;
+  // Unreachable for a server-approved command: an unresolvable place is flagged and can
+  // never be dispatched. Falling back to the AO centre here is what used to make an
+  // invented sector look plausible on the map.
+  return AO.resolvePlace(MANUAL_DEFAULT_TARGET);
 }
 function offsetOf(form, i, n, m) {
   if (form === 'line') return { x: (i - (n - 1) / 2) * m, y: 0 };
@@ -57,7 +48,7 @@ const lerp = (a, b, t) => a + (b - a) * t;
 const state = {
   input: '', busy: false,
   stages: STAGE_NAMES.map((n) => ({ name: n, status: 'idle', detail: '' })),
-  result: null, errors: [], ambiguous: [], routed: false, log: [],
+  result: null, errors: [], ambiguous: [], unresolved: [], status: null, provenance: {}, routed: false, log: [],
   droneType: 'recon', count: 4, formation: 'wedge',
   deploying: false, missionLabel: '', missionColor: C.run,
 };
@@ -83,7 +74,8 @@ function pickLZ(constraint, target, originBase) {
 
 function reset() {
   state.stages = STAGE_NAMES.map((n) => ({ name: n, status: 'idle', detail: '' }));
-  state.result = null; state.errors = []; state.ambiguous = []; state.routed = false;
+  state.result = null; state.errors = []; state.ambiguous = []; state.unresolved = [];
+  state.status = null; state.provenance = {}; state.routed = false;
 }
 
 async function run() {
@@ -95,7 +87,7 @@ async function run() {
   render();
   await new Promise((r) => setTimeout(r, 120));
   state.stages[0] = { name: STAGE_NAMES[0], status: 'ok', detail: '3 few-shot pairs + 7-key schema' };
-  for (let i = 1; i < 5; i++) state.stages[i] = { name: STAGE_NAMES[i], status: 'run', detail: '' };
+  for (let i = 1; i < STAGE_NAMES.length; i++) state.stages[i] = { name: STAGE_NAMES[i], status: 'run', detail: '' };
   render();
 
   try {
@@ -108,14 +100,18 @@ async function run() {
     if (!res.ok) {
       state.stages[1] = { name: STAGE_NAMES[1], status: 'fail', detail: body.message || 'request failed' };
       state.errors = [body.message || 'request failed'];
+      state.status = 'error';
       state.busy = false;
       render();
       return;
     }
-    state.stages = body.stages && body.stages.length === 5 ? body.stages : state.stages;
+    state.stages = body.stages && body.stages.length === STAGE_NAMES.length ? body.stages : state.stages;
     state.result = body.command || null;
     state.errors = body.errors || [];
     state.ambiguous = body.ambiguous || [];
+    state.unresolved = body.unresolved || [];
+    state.status = body.status || null;
+    state.provenance = {};
     const cmd = commandOnly(state.result);
     if (body.status === 'ok' && Number.isInteger(cmd.drone_count)) {
       state.count = Math.min(12, cmd.drone_count);
@@ -123,6 +119,7 @@ async function run() {
   } catch (e) {
     state.stages[1] = { name: STAGE_NAMES[1], status: 'fail', detail: e.message };
     state.errors = [e.message];
+    state.status = 'error';
   }
   state.busy = false;
   render();
@@ -132,7 +129,10 @@ function deploy(cmd) {
   if (state.deploying) return;
   const n = Math.min(12, Math.max(1, Number.isInteger(cmd.drone_count) ? cmd.drone_count : state.count));
   const type = TYPES.find((t) => t.id === state.droneType) || TYPES[0];
-  const base = BASES[/bravo/i.test(cmd.origin || '') ? 'Bravo' : 'Alpha'];
+  // A dispatched command has already had its origin resolved server-side; the fallback
+  // covers only a legitimately null origin (nothing stated), never an unrecognised one —
+  // those are flagged and cannot reach this function.
+  const base = AO.resolveOrigin(cmd.origin) || AO.resolveOrigin('Alpha');
   const target = resolveTarget(cmd.target_sector);
   const lz = pickLZ(cmd.landing_constraint, target, base);
   const M = 0.0016;
@@ -180,14 +180,268 @@ function deploy(cmd) {
   raf = requestAnimationFrame(tick);
 }
 
+function operatorSuppliedFields() {
+  return Object.keys(state.provenance).filter((f) => state.provenance[f] === 'operator');
+}
+
 function route(status, cmd, note) {
+  const supplied = operatorSuppliedFields();
   const body = status === 'Flagged'
     ? (state.errors.length ? 'validation: ' + state.errors.join('; ') : 'ambiguous: ' + (state.ambiguous.join(', ') || 'unspecified') + ' — not guessed')
-    : JSON.stringify({ ...cmd, swarm: { type: state.droneType, formation: state.formation } }, null, 2);
+    : JSON.stringify({
+      ...cmd,
+      ...(supplied.length ? { operator_supplied: supplied } : {}),
+      swarm: { type: state.droneType, formation: state.formation },
+    }, null, 2);
   const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  state.routed = status !== 'Manual';
+  // "Routed" means the result reached a terminal destination. A resolved command has
+  // not — it is now awaiting dispatch, so it must not suppress the Dispatch button.
+  state.routed = status === 'Dispatched' || status === 'Flagged';
   state.log.unshift({ id: Date.now() + Math.random(), status, time, input: note, body, color: status === 'Flagged' ? C.fail : C.ok });
   renderLog();
+}
+
+// ---------- human review dialog ----------
+
+/**
+ * What a reviewer has to supply before this command can be dispatched: places the
+ * gazetteer rejected, fields the model flagged as vague, and any required field simply
+ * left null. Ordered so the unknown-place cases (which show the rejected value) come
+ * first.
+ */
+function fieldsNeedingInput() {
+  const cmd = commandOnly(state.result);
+  const seen = new Set();
+  const needs = [];
+  state.unresolved.forEach((u) => {
+    if (seen.has(u.field)) return;
+    seen.add(u.field);
+    needs.push({ field: u.field, why: u.reason, rejected: u.value });
+  });
+  state.ambiguous.forEach((f) => {
+    if (seen.has(f)) return;
+    seen.add(f);
+    needs.push({ field: f, why: 'stated vaguely — not guessed', rejected: null });
+  });
+  ['drone_count', 'task_type', 'target_sector'].forEach((f) => {
+    if (seen.has(f) || cmd[f] !== null) return;
+    seen.add(f);
+    needs.push({ field: f, why: 'not stated in the tasking', rejected: null });
+  });
+  return needs;
+}
+
+function option(parent, label, value) {
+  const o = document.createElement('option');
+  o.textContent = label;
+  o.value = value;
+  parent.appendChild(o);
+  return o;
+}
+
+/**
+ * A constrained control per field. Places come from the gazetteer and enums from the
+ * shared list the server validates against, so a reviewer cannot hand-type the very
+ * hallucination the parser just rejected.
+ */
+function buildControl(field, current) {
+  if (field === 'drone_count') {
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.min = '1';
+    input.max = '12';
+    input.className = 'review-input';
+    input.placeholder = 'How many drones? (1–12)';
+    if (Number.isInteger(current)) input.value = String(current);
+    input.dataset.field = field;
+    return input;
+  }
+
+  const select = document.createElement('select');
+  select.className = 'review-select';
+  select.dataset.field = field;
+
+  if (field === 'origin') {
+    option(select, '— select launch base —', '');
+    option(select, '(not stated)', '__null__');
+    AO.BASES.forEach((b) => option(select, 'Base ' + b.name, b.name));
+  } else if (field === 'target_sector') {
+    option(select, '— select target —', '');
+    AO.targetOptions().forEach((g) => {
+      const group = document.createElement('optgroup');
+      group.label = g.group;
+      g.names.forEach((n) => option(group, n, n));
+      select.appendChild(group);
+    });
+  } else if (field === 'task_type') {
+    option(select, '— select task type —', '');
+    AO.TASK_TYPES.forEach((t) => option(select, t, t));
+  } else if (field === 'landing_constraint') {
+    AO.LANDING.forEach((l) => option(select, l, l));
+    select.value = current || 'any_available';
+  }
+  return select;
+}
+
+function renderReviewFields(needs) {
+  const host = $('review-fields');
+  host.innerHTML = '';
+  const cmd = commandOnly(state.result);
+  needs.forEach((need) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'review-field';
+
+    const head = document.createElement('div');
+    head.className = 'review-field-head';
+    const key = document.createElement('code');
+    key.className = 'review-field-key';
+    key.textContent = need.field;
+    const why = document.createElement('span');
+    why.className = 'review-field-why';
+    why.textContent = need.why;
+    head.append(key, why);
+    wrap.appendChild(head);
+
+    if (need.rejected !== null && need.rejected !== undefined) {
+      const rejected = document.createElement('p');
+      rejected.className = 'review-rejected';
+      rejected.append(document.createTextNode('model produced '));
+      const code = document.createElement('code');
+      code.textContent = JSON.stringify(need.rejected);
+      rejected.appendChild(code);
+      rejected.append(document.createTextNode(' — rejected'));
+      wrap.appendChild(rejected);
+    }
+
+    wrap.appendChild(buildControl(need.field, cmd[need.field]));
+    host.appendChild(wrap);
+  });
+}
+
+function renderReviewKnown(needFields) {
+  const host = $('review-known');
+  host.innerHTML = '';
+  const cmd = commandOnly(state.result);
+  Object.keys(cmd).forEach((k) => {
+    if (needFields.includes(k)) return;
+    const row = document.createElement('div');
+    row.className = 'field-row';
+    const key = document.createElement('code');
+    key.className = 'field-key';
+    key.textContent = k;
+    const value = document.createElement('span');
+    value.className = 'field-value';
+    value.textContent = cmd[k] === null ? 'null' : JSON.stringify(cmd[k]);
+    row.append(key, value);
+    host.appendChild(row);
+  });
+}
+
+function showReviewError(message) {
+  const el = $('review-error');
+  el.textContent = message;
+  el.classList.remove('hidden');
+}
+
+function openReview() {
+  if (!state.result && !state.errors.length) return;
+  const blocked = state.errors.length > 0;
+  const needs = blocked ? [] : fieldsNeedingInput();
+
+  $('review-tasking').textContent = state.input.trim();
+  $('review-error').classList.add('hidden');
+  $('review-reason').textContent = blocked
+    ? 'The model could not produce a schema-valid command, even after one repair attempt.'
+    : `Held back because ${needs.map((n) => n.field).join(', ')} could not be taken from the tasking. `
+      + `Supply ${needs.length > 1 ? 'them' : 'it'} to clear this command for dispatch.`;
+
+  const blockedEl = $('review-blocked');
+  blockedEl.classList.toggle('hidden', !blocked);
+  if (blocked) {
+    blockedEl.textContent = 'Re-issue the tasking with the missing detail stated explicitly. '
+      + 'Hand-filling every field here would not be reviewing the parse — there is no trustworthy parse to review.';
+  }
+
+  $('review-needs').classList.toggle('hidden', blocked || needs.length === 0);
+  $('review-known-wrap').classList.toggle('hidden', blocked);
+  $('review-approve').disabled = blocked;
+
+  renderReviewFields(needs);
+  renderReviewKnown(needs.map((n) => n.field));
+  $('review-overlay').classList.remove('hidden');
+}
+
+function closeReview() {
+  $('review-overlay').classList.add('hidden');
+}
+
+function collectOverrides() {
+  const overrides = {};
+  let complete = true;
+  $('review-fields').querySelectorAll('[data-field]').forEach((el) => {
+    const field = el.dataset.field;
+    const raw = el.value;
+    if (raw === '' || raw === null || raw === undefined) { complete = false; return; }
+    if (field === 'drone_count') {
+      const n = parseInt(raw, 10);
+      if (!Number.isInteger(n)) { complete = false; return; }
+      overrides[field] = n;
+    } else if (raw === '__null__') {
+      overrides[field] = null;
+    } else {
+      overrides[field] = raw;
+    }
+  });
+  return { overrides, complete };
+}
+
+/**
+ * Send the operator's values to the server, which re-runs the same validation the
+ * parser uses. The dropdowns above are a convenience; this round trip is the
+ * enforcement, so an approved command is held to the same standard as a parsed one.
+ */
+async function approveReview() {
+  const { overrides, complete } = collectOverrides();
+  if (!complete) {
+    showReviewError('Supply every field listed above before approving.');
+    return;
+  }
+  const btn = $('review-approve');
+  btn.disabled = true;
+  btn.textContent = 'Checking…';
+  try {
+    const res = await fetch('/api/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tasking: state.input.trim(), command: state.result, overrides }),
+    });
+    const body = await res.json();
+    if (!res.ok) { showReviewError(body.message || 'resolve request failed'); return; }
+    if (body.status !== 'ok') {
+      const why = (body.errors || []).concat((body.unresolved || []).map((u) => `${u.field} "${u.value}" — ${u.reason}`));
+      showReviewError('Still not dispatchable: ' + (why.join('; ') || 'unresolved'));
+      return;
+    }
+
+    state.result = body.command;
+    state.status = body.status;
+    state.errors = body.errors || [];
+    state.ambiguous = body.ambiguous || [];
+    state.unresolved = body.unresolved || [];
+    state.provenance = body.provenance || {};
+    state.stages = body.stages && body.stages.length === STAGE_NAMES.length ? body.stages : state.stages;
+
+    const cmd = commandOnly(state.result);
+    if (Number.isInteger(cmd.drone_count)) state.count = Math.min(12, cmd.drone_count);
+    route('Resolved', cmd, state.input.trim());
+    closeReview();
+    render();
+  } catch (e) {
+    showReviewError(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Approve for dispatch';
+  }
 }
 
 // ---------- rendering ----------
@@ -271,7 +525,13 @@ function renderMissionBanner() {
   $('mission-label').textContent = state.missionLabel;
 }
 
+/**
+ * The server owns this verdict. Recomputing it here from errors/ambiguous/confidence
+ * would miss any reason the client does not model — an unresolvable place name, for
+ * one — and silently offer Dispatch on a command the server had already held back.
+ */
 function isFlagged() {
+  if (state.status) return state.status !== 'ok';
   return !!state.result && (state.errors.length > 0 || state.ambiguous.length > 0 || state.result.confidence === 'low');
 }
 
@@ -282,25 +542,40 @@ function renderVerdict() {
   const flagged = isFlagged();
   card.classList.toggle('ok', !flagged);
   card.classList.toggle('fail', flagged);
-  $('verdict-title').textContent = flagged ? 'Flagged for human review' : 'Valid mission command';
+  const supplied = operatorSuppliedFields();
+  $('verdict-title').textContent = flagged
+    ? 'Flagged for human review'
+    : (supplied.length ? 'Cleared by operator review' : 'Valid mission command');
   const attempts = state.stages[3].status === 'idle' ? 1 : 2;
-  $('verdict-meta').textContent = attempts === 2 ? '2 model calls · 1 repair' : '1 model call · no repair';
+  $('verdict-meta').textContent = supplied.length
+    ? `${supplied.length} field${supplied.length > 1 ? 's' : ''} supplied by operator`
+    : (attempts === 2 ? '2 model calls · 1 repair' : '1 model call · no repair');
 
+  const unknownPlaces = state.unresolved.map((u) => `${u.field} "${u.value}" — ${u.reason}`).join('; ');
   const note = state.errors.length
     ? 'Schema validation failed after the repair attempt: ' + state.errors.join('; ')
-    : (state.ambiguous.length ? 'Ambiguous in the tasking: ' + state.ambiguous.join(', ') + '. Held back rather than guessed.' : '');
+    : unknownPlaces
+      ? 'Unknown location: ' + unknownPlaces + '. Not plotted, not dispatched.'
+      : (state.ambiguous.length ? 'Ambiguous in the tasking: ' + state.ambiguous.join(', ') + '. Held back rather than guessed.' : '');
   $('verdict-note').textContent = note;
   $('verdict-note').classList.toggle('hidden', !note);
 
   const cmd = commandOnly(state.result);
   const amb = state.ambiguous;
+  const unknown = state.unresolved.map((u) => u.field);
   const grid = $('fields-grid');
   grid.innerHTML = '';
   Object.keys(cmd).forEach((k) => {
     const isDefault = k === 'landing_constraint' && cmd[k] === 'any_available' && !/land|lz|return/i.test(state.input);
     const value = cmd[k] === null ? 'null' : JSON.stringify(cmd[k]);
-    const noteText = amb.includes(k) ? 'ambiguous — not guessed' : (cmd[k] === null ? (k === 'origin' ? 'not stated' : 'missing') : (isDefault ? 'schema default' : ''));
-    const color = amb.includes(k) ? C.fail : (cmd[k] === null ? C.muted : C.fg);
+    const byOperator = state.provenance[k] === 'operator';
+    const noteText = unknown.includes(k) ? 'unknown place — not on the map'
+      : amb.includes(k) ? 'ambiguous — not guessed'
+      : byOperator ? 'operator-supplied'
+      : (cmd[k] === null ? (k === 'origin' ? 'not stated' : 'missing') : (isDefault ? 'schema default' : ''));
+    const color = amb.includes(k) || unknown.includes(k) ? C.fail
+      : byOperator ? C.run
+      : (cmd[k] === null ? C.muted : C.fg);
     const row = document.createElement('div');
     row.className = 'field-row';
     row.innerHTML = `<code class="field-key">${k}</code><span class="field-value" style="color:${color}">${value}${noteText ? `<span class="field-note">${noteText}</span>` : ''}</span>`;
@@ -321,7 +596,11 @@ function renderLog() {
     el.innerHTML = '<div class="card"><p class="hint">No taskings processed yet. Parse a tasking or deploy manually to see commands routed here.</p></div>';
     return;
   }
-  meta.textContent = `${state.log.filter((e) => e.status !== 'Flagged').length} deployed · ${state.log.filter((e) => e.status === 'Flagged').length} flagged`;
+  const deployed = state.log.filter((e) => e.status === 'Dispatched' || e.status === 'Manual').length;
+  const flaggedCount = state.log.filter((e) => e.status === 'Flagged').length;
+  const resolvedCount = state.log.filter((e) => e.status === 'Resolved').length;
+  meta.textContent = `${deployed} deployed · ${flaggedCount} flagged`
+    + (resolvedCount ? ` · ${resolvedCount} resolved` : '');
   el.innerHTML = '';
   state.log.forEach((e) => {
     const art = document.createElement('div');
@@ -348,8 +627,8 @@ function render() {
 document.addEventListener('DOMContentLoaded', () => {
   MissionMap.init('map');
   MissionMap.setStatic({
-    bases: Object.entries(BASES).map(([name, p]) => ({ name: 'BASE ' + name.toUpperCase(), ...p })),
-    lzs: LZS, sectors: SECTORS, perimeter: PERIMETER,
+    bases: BASES.map((b) => ({ name: 'BASE ' + b.name.toUpperCase(), lat: b.lat, lng: b.lng })),
+    lzs: LZS, sectors: SECTORS, perimeter: PERIMETER, landmarks: LANDMARKS,
   });
 
   renderTypeOpts();
@@ -378,10 +657,20 @@ document.addEventListener('DOMContentLoaded', () => {
       renderVerdict();
       deploy(cmd);
     }
-    if (e.target && e.target.id === 'flag-btn') {
-      const cmd = commandOnly(state.result);
-      route('Flagged', cmd, state.input.trim());
-      renderVerdict();
-    }
+    if (e.target && e.target.id === 'flag-btn') openReview();
+  });
+
+  $('review-close').addEventListener('click', closeReview);
+  $('review-approve').addEventListener('click', approveReview);
+  $('review-reject').addEventListener('click', () => {
+    route('Flagged', commandOnly(state.result), state.input.trim());
+    closeReview();
+    render();
+  });
+  $('review-overlay').addEventListener('click', (e) => {
+    if (e.target === $('review-overlay')) closeReview();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !$('review-overlay').classList.contains('hidden')) closeReview();
   });
 });

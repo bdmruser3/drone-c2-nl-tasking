@@ -146,5 +146,46 @@ textarea:focus { border-color: var(--accent); }
 .log-input { margin: 0 0 .5rem; font-size: .875rem; color: var(--fg); }
 .log-body { margin: 0; padding: .6rem; background: var(--bg); border: 1px solid var(--border); border-radius: .6rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .75rem; color: var(--muted); white-space: pre-wrap; word-break: break-word; }
 
+/* ---------- human-review dialog ---------- */
+.overlay {
+  position: fixed; inset: 0; z-index: 2000; display: flex; align-items: center; justify-content: center;
+  background: rgba(10, 7, 5, .72); padding: 24px;
+}
+.dialog {
+  width: min(560px, 100%); max-height: min(88vh, 820px); display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--fail); border-radius: 1rem;
+  box-shadow: 0 24px 64px rgba(0,0,0,.55);
+}
+.dialog-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem;
+  padding: 1rem 1.1rem .85rem; border-bottom: 1px solid var(--border);
+}
+.dialog-eyebrow { margin: 0 0 .2rem; font-size: .7rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--fail); }
+.dialog-title { margin: 0; font-size: 1rem; font-weight: 600; }
+.dialog-body { padding: 1rem 1.1rem; overflow-y: auto; display: flex; flex-direction: column; gap: 1rem; }
+.dialog-foot { display: flex; gap: .6rem; padding: .85rem 1.1rem 1rem; border-top: 1px solid var(--border); }
+.dialog-foot .btn { flex: 1; }
+
+.review-tasking {
+  margin: 0; padding: .6rem .7rem; background: var(--bg); border: 1px solid var(--border);
+  border-radius: .6rem; font-size: .875rem; line-height: 1.45;
+}
+.review-reason { margin: 0; font-size: .8125rem; color: var(--fg); }
+.review-blocked { padding: .7rem .8rem; border: 1px solid #5c342f; border-radius: .6rem; background: #2c1e1a; font-size: .8125rem; }
+.review-error { margin: 0; font-size: .8125rem; color: var(--fail); }
+
+.review-field { border: 1px solid var(--border); border-radius: .75rem; padding: .7rem .8rem; display: flex; flex-direction: column; gap: .5rem; }
+.review-field-head { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; }
+.review-field-key { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8125rem; color: var(--fg); }
+.review-field-why { font-size: .7rem; color: var(--fail); text-align: right; }
+.review-rejected { font-size: .75rem; color: var(--muted); }
+.review-rejected code { text-decoration: line-through; }
+
+.review-input, .review-select {
+  width: 100%; background: var(--bg); color: var(--fg); border: 1px solid var(--border-2);
+  border-radius: .6rem; padding: .55rem .6rem; font: inherit; font-size: .875rem; min-height: 40px; outline: none;
+}
+.review-input:focus, .review-select:focus { border-color: var(--accent); }
+
 .leaflet-control-attribution { background: rgba(34,26,21,0.8) !important; color: var(--muted) !important; }
 .leaflet-control-attribution a { color: var(--muted) !important; }

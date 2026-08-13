@@ -1,6 +1,13 @@
 const MissionMap = (() => {
-  let map, sectorLayer, baseLayer, lzLayer, perimeterLayer, missionLayer, droneLayer;
+  let map, sectorLayer, baseLayer, lzLayer, perimeterLayer, missionLayer, droneLayer, landmarkLayer;
   const droneMarkers = [];
+
+  //: Lowest zoom at which each landmark tier is labelled. The gazetteer holds ~110
+  //: places; drawing them all at once turns the AO into an unreadable wall of text, so
+  //: detail appears as the operator zooms in. Resolution is unaffected — every name is
+  //: accepted as a tasking target whatever the map is currently showing.
+  const TIER_MIN_ZOOM = { 1: 0, 2: 12, 3: 13 };
+  let landmarkData = [];
 
   function init(elId) {
     map = L.map(elId, { zoomControl: true, attributionControl: true }).setView([1.345, 103.82], 11);
@@ -11,22 +18,44 @@ const MissionMap = (() => {
 
     sectorLayer = L.layerGroup().addTo(map);
     perimeterLayer = L.layerGroup().addTo(map);
+    landmarkLayer = L.layerGroup().addTo(map);
     baseLayer = L.layerGroup().addTo(map);
     lzLayer = L.layerGroup().addTo(map);
     missionLayer = L.layerGroup().addTo(map);
     droneLayer = L.layerGroup().addTo(map);
+    map.on('zoomend', renderLandmarks);
     return map;
+  }
+
+  /** Redraw the place labels visible at the current zoom. Cheap enough to run on every zoom. */
+  function renderLandmarks() {
+    if (!landmarkLayer) return;
+    landmarkLayer.clearLayers();
+    const zoom = map.getZoom();
+    landmarkData
+      .filter((p) => zoom >= (TIER_MIN_ZOOM[p.tier || 1] || 0))
+      .forEach((p) => {
+        L.circleMarker([p.lat, p.lng], { radius: 2, color: '#a49383', weight: 1, fillOpacity: 0.8, fillColor: '#a49383', interactive: false }).addTo(landmarkLayer);
+        L.marker([p.lat, p.lng], {
+          icon: divIcon(`<span style="position:absolute;left:6px;top:-6px;white-space:nowrap;font:500 9px ui-sans-serif;color:#a49383;text-shadow:0 0 3px #17120e,0 0 3px #17120e">${p.name}</span>`, [6, 6]),
+          interactive: false,
+        }).addTo(landmarkLayer);
+      });
   }
 
   function divIcon(html, size) {
     return L.divIcon({ html, className: 'mm-icon', iconSize: size || [20, 20], iconAnchor: [(size ? size[0] : 20) / 2, (size ? size[1] : 20) / 2] });
   }
 
-  function setStatic({ bases, lzs, sectors, perimeter }) {
+  function setStatic({ bases, lzs, sectors, perimeter, landmarks }) {
     sectorLayer.clearLayers();
     perimeterLayer.clearLayers();
+    landmarkLayer.clearLayers();
     baseLayer.clearLayers();
     lzLayer.clearLayers();
+
+    landmarkData = landmarks || [];
+    renderLandmarks();
 
     sectors.forEach((s) => {
       L.rectangle([[s.lat0, s.lng0], [s.lat1, s.lng1]], {

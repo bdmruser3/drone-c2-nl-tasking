@@ -103,7 +103,48 @@
     </main>
   </div>
 
+  <div id="review-overlay" class="overlay hidden">
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="review-title">
+      <div class="dialog-head">
+        <div>
+          <p class="dialog-eyebrow">Human review</p>
+          <h2 id="review-title" class="dialog-title">Resolve before dispatch</h2>
+        </div>
+        <button id="review-close" class="btn btn-ghost">Close</button>
+      </div>
+
+      <div class="dialog-body">
+        <div class="field">
+          <span class="field-label">Operator tasking</span>
+          <p id="review-tasking" class="review-tasking"></p>
+        </div>
+        <p id="review-reason" class="review-reason"></p>
+
+        <div id="review-blocked" class="review-blocked hidden"></div>
+
+        <div id="review-needs" class="field">
+          <span class="field-label">Needs your input</span>
+          <div id="review-fields" class="stack"></div>
+        </div>
+
+        <div id="review-known-wrap" class="field">
+          <span class="field-label">Parsed from the tasking</span>
+          <div id="review-known" class="fields-grid"></div>
+        </div>
+
+        <p id="review-error" class="review-error hidden"></p>
+        <p class="hint">Values you supply are recorded as operator-supplied, not model-derived. The model is not consulted again.</p>
+      </div>
+
+      <div class="dialog-foot">
+        <button id="review-reject" class="btn btn-danger">Reject tasking</button>
+        <button id="review-approve" class="btn btn-primary">Approve for dispatch</button>
+      </div>
+    </div>
+  </div>
+
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="ao.js"></script>
   <script src="map.js"></script>
   <script src="app.js"></script>
 </body>
