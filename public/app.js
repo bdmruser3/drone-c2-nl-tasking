@@ -34,6 +34,94 @@ for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) {
 }
 const PERIMETER = [[1.448, 103.65], [1.44, 103.72], [1.452, 103.78], [1.44, 103.85], [1.428, 103.92], [1.42, 103.99]];
 
+function generateObstacles() {
+  const clearOf = [...Object.values(BASES), ...LZS];
+  const n = 5 + Math.floor(Math.random() * 4); // 5-8
+  const obs = [];
+  for (let i = 0; i < n; i++) {
+    let lat, lng, ok, tries = 0;
+    do {
+      lat = GRID.lat0 + Math.random() * (GRID.lat1 - GRID.lat0);
+      lng = GRID.lng0 + Math.random() * (GRID.lng1 - GRID.lng0);
+      ok = clearOf.every((p) => Math.hypot(p.lat - lat, p.lng - lng) > 0.012);
+      tries++;
+    } while (!ok && tries < 20);
+    const radius = 0.0035 + Math.random() * 0.0035; // ~390-780m no-fly buffer
+    const height = 110 + Math.round(Math.random() * 260); // 110-370m AGL, cosmetic
+    obs.push({ id: 'OBST-' + (i + 1), lat, lng, radius, height });
+  }
+  return obs;
+}
+const OBSTACLES = generateObstacles();
+
+function distToSegment(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 === 0 ? 0 : ((px - ax) * dx + (py - ay) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + t * dx, cy = ay + t * dy;
+  return { dist: Math.hypot(px - cx, py - cy), t, cx, cy };
+}
+
+// Deterministic fallback: nudge waypoints out of any obstacle's no-fly radius.
+function routeAroundObstacles(points, obstacles) {
+  const routed = [points[0]];
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i], b = points[i + 1];
+    const hits = [];
+    (obstacles || OBSTACLES).forEach((o) => {
+      const { dist, t, cx, cy } = distToSegment(o.lat, o.lng, a[0], a[1], b[0], b[1]);
+      const clearance = o.radius * 1.35;
+      if (dist < clearance && t > 0.02 && t < 0.98) {
+        let dx = cx - o.lat, dy = cy - o.lng;
+        const mag = Math.hypot(dx, dy) || 1e-6;
+        dx /= mag; dy /= mag;
+        hits.push({ t, point: [o.lat + dx * clearance, o.lng + dy * clearance] });
+      }
+    });
+    hits.sort((h1, h2) => h1.t - h2.t);
+    hits.forEach((h) => routed.push(h.point));
+    routed.push(b);
+  }
+  return routed;
+}
+
+function pathLength(path) {
+  let d = 0;
+  for (let i = 0; i < path.length - 1; i++) d += Math.hypot(path[i + 1][0] - path[i][0], path[i + 1][1] - path[i][1]);
+  return d;
+}
+function pointAlongPath(path, t) {
+  if (path.length === 1) return { lat: path[0][0], lng: path[0][1] };
+  const total = pathLength(path);
+  if (total === 0) return { lat: path[0][0], lng: path[0][1] };
+  let remaining = Math.max(0, Math.min(1, t)) * total;
+  for (let i = 0; i < path.length - 1; i++) {
+    const segLen = Math.hypot(path[i + 1][0] - path[i][0], path[i + 1][1] - path[i][1]);
+    if (remaining <= segLen || i === path.length - 2) {
+      const frac = segLen === 0 ? 0 : Math.min(1, remaining / segLen);
+      return { lat: path[i][0] + (path[i + 1][0] - path[i][0]) * frac, lng: path[i][1] + (path[i + 1][1] - path[i][1]) * frac };
+    }
+    remaining -= segLen;
+  }
+  return { lat: path[path.length - 1][0], lng: path[path.length - 1][1] };
+}
+
+async function planRoute(start, end) {
+  try {
+    const res = await fetch('/api/route', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ start, end, obstacles: OBSTACLES }),
+    });
+    const body = await res.json();
+    if (body.ok && Array.isArray(body.waypoints) && body.waypoints.length >= 2) {
+      return { path: body.waypoints.map((w) => [w.lat, w.lng]), source: 'llm' };
+    }
+  } catch (e) { /* fall through to geometric fallback */ }
+  return { path: routeAroundObstacles([[start.lat, start.lng], [end.lat, end.lng]]), source: 'fallback' };
+}
+
 function resolveTarget(name) {
   const s = String(name || '');
   const m = /(\d)/.exec(s);
@@ -128,24 +216,33 @@ async function run() {
   render();
 }
 
-function deploy(cmd) {
+async function deploy(cmd) {
   if (state.deploying) return;
   const n = Math.min(12, Math.max(1, Number.isInteger(cmd.drone_count) ? cmd.drone_count : state.count));
   const type = TYPES.find((t) => t.id === state.droneType) || TYPES[0];
   const base = BASES[/bravo/i.test(cmd.origin || '') ? 'Bravo' : 'Alpha'];
   const target = resolveTarget(cmd.target_sector);
   const lz = pickLZ(cmd.landing_constraint, target, base);
-  const M = 0.0016;
-  const T = { launch: 1.5, transit: 6.5, station: 10.5, land: 14, end: 15 };
   const desc = `${n} × ${type.label} · ${state.formation} → ${target.label}`;
   const formation = state.formation;
 
-  MissionMap.setMission({ target: [target.lat, target.lng], label: target.label, path: [[base.lat, base.lng], [target.lat, target.lng], [lz.lat, lz.lng]], lz: [lz.lat, lz.lng] });
   state.deploying = true;
-  state.missionLabel = desc + ' — launching';
+  state.missionLabel = desc + ' — routing (LLM planning path around obstacles)…';
   state.missionColor = C.run;
   renderMissionBanner();
   renderManualDeployButton();
+
+  const routed = await planRoute({ lat: base.lat, lng: base.lng }, { lat: target.lat, lng: target.lng });
+  const transitPath = routed.path;
+  const landPath = routeAroundObstacles([[target.lat, target.lng], [lz.lat, lz.lng]]);
+  const fullPath = transitPath.concat(landPath.slice(1));
+
+  const M = 0.0016;
+  const T = { launch: 1.5, transit: 6.5, station: 10.5, land: 14, end: 15 };
+
+  MissionMap.setMission({ target: [target.lat, target.lng], label: target.label, path: fullPath, lz: [lz.lat, lz.lng] });
+  state.missionLabel = desc + ` — launching (route: ${routed.source === 'llm' ? 'LLM-planned' : 'geometric fallback'}, ${transitPath.length} waypoints)`;
+  renderMissionBanner();
 
   const t0 = performance.now();
   let lastPhase = 'launching';
@@ -153,9 +250,9 @@ function deploy(cmd) {
     const t = (performance.now() - t0) / 1000;
     let cx, cy, scale = 1, phase;
     if (t < T.launch) { phase = 'launching'; cx = base.lat; cy = base.lng; scale = 0.3 + 0.2 * (t / T.launch); }
-    else if (t < T.transit) { phase = 'en route'; const p = ease((t - T.launch) / (T.transit - T.launch)); cx = lerp(base.lat, target.lat, p); cy = lerp(base.lng, target.lng, p); scale = Math.min(1, 0.5 + (t - T.launch)); }
+    else if (t < T.transit) { phase = 'en route'; const p = ease((t - T.launch) / (T.transit - T.launch)); const pt = pointAlongPath(transitPath, p); cx = pt.lat; cy = pt.lng; scale = Math.min(1, 0.5 + (t - T.launch)); }
     else if (t < T.station) { phase = 'on station — ' + (cmd.task_type || 'survey'); cx = target.lat; cy = target.lng; }
-    else if (t < T.land) { phase = 'landing at ' + lz.tag; const p = ease((t - T.station) / (T.land - T.station)); cx = lerp(target.lat, lz.lat, p); cy = lerp(target.lng, lz.lng, p); scale = 1 - 0.85 * p; }
+    else if (t < T.land) { phase = 'landing at ' + lz.tag; const p = ease((t - T.station) / (T.land - T.station)); const pt = pointAlongPath(landPath, p); cx = pt.lat; cy = pt.lng; scale = 1 - 0.85 * p; }
     else {
       MissionMap.setDrones([]);
       MissionMap.setMission(null);
@@ -362,6 +459,7 @@ document.addEventListener('DOMContentLoaded', () => {
     bases: Object.entries(BASES).map(([name, p]) => ({ name: 'BASE ' + name.toUpperCase(), ...p })),
     lzs: LZS, sectors: SECTORS, perimeter: PERIMETER,
   });
+  MissionMap.setObstacles(OBSTACLES);
 
   renderTypeOpts();
   renderFormOpts();

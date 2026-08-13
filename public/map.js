@@ -1,6 +1,7 @@
 const MissionMap = (() => {
-  let map, sectorLayer, baseLayer, lzLayer, perimeterLayer, missionLayer, droneLayer;
+  let map, sectorLayer, baseLayer, lzLayer, perimeterLayer, missionLayer, droneLayer, obstacleLayer;
   const droneMarkers = [];
+  const METERS_PER_DEGREE = 111320;
 
   function init(elId) {
     map = L.map(elId, { zoomControl: true, attributionControl: true }).setView([1.345, 103.82], 11);
@@ -15,6 +16,7 @@ const MissionMap = (() => {
     lzLayer = L.layerGroup().addTo(map);
     missionLayer = L.layerGroup().addTo(map);
     droneLayer = L.layerGroup().addTo(map);
+    obstacleLayer = L.layerGroup().addTo(map);
     return map;
   }
 
@@ -55,6 +57,21 @@ const MissionMap = (() => {
     });
   }
 
+  function setObstacles(obstacles) {
+    obstacleLayer.clearLayers();
+    (obstacles || []).forEach((o) => {
+      L.circle([o.lat, o.lng], {
+        radius: o.radius * METERS_PER_DEGREE,
+        color: '#8a6a52', weight: 1.5, dashArray: '3 4', fillColor: '#8a6a52', fillOpacity: 0.14,
+      }).addTo(obstacleLayer);
+      L.marker([o.lat, o.lng], {
+        icon: divIcon(`<span style="color:#8a6a52;font-size:13px">&#9650;</span>`, [14, 14]),
+        interactive: false,
+      }).addTo(obstacleLayer)
+        .bindTooltip(`${o.id} · ${o.height}m AGL · no-fly buffer ${Math.round(o.radius * METERS_PER_DEGREE)}m`, { permanent: false, direction: 'top' });
+    });
+  }
+
   function setMission(mission) {
     missionLayer.clearLayers();
     if (!mission) return;
@@ -81,5 +98,5 @@ const MissionMap = (() => {
 
   function getMap() { return map; }
 
-  return { init, setStatic, setMission, setDrones, getMap };
+  return { init, setStatic, setObstacles, setMission, setDrones, getMap };
 })();
