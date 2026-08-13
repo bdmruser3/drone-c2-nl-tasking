@@ -21,11 +21,99 @@ const SAMPLES = [
 
 // Place data now lives in ao.js, shared verbatim with the server so the map, the prompt
 // and the validator cannot disagree about which places exist.
-const { BASES, LZS, SECTORS, PERIMETER, LANDMARKS } = AO;
+const { BASES, LZS, GRID, SECTORS, PERIMETER, LANDMARKS } = AO;
 
 //: Where a manual deploy goes when no parsed command is on screen. An explicit default,
 //: not a lookup miss — resolveTarget() no longer invents a location for unknown names.
 const MANUAL_DEFAULT_TARGET = 'Sector 5';
+
+function generateObstacles() {
+  const clearOf = [...BASES, ...LZS]; // AO.BASES is an array of {name, lat, lng}
+  const n = 5 + Math.floor(Math.random() * 4); // 5-8
+  const obs = [];
+  for (let i = 0; i < n; i++) {
+    let lat, lng, ok, tries = 0;
+    do {
+      lat = GRID.lat0 + Math.random() * (GRID.lat1 - GRID.lat0);
+      lng = GRID.lng0 + Math.random() * (GRID.lng1 - GRID.lng0);
+      ok = clearOf.every((p) => Math.hypot(p.lat - lat, p.lng - lng) > 0.012);
+      tries++;
+    } while (!ok && tries < 20);
+    const radius = 0.0035 + Math.random() * 0.0035; // ~390-780m no-fly buffer
+    const height = 110 + Math.round(Math.random() * 260); // 110-370m AGL, cosmetic
+    obs.push({ id: 'OBST-' + (i + 1), lat, lng, radius, height });
+  }
+  return obs;
+}
+const OBSTACLES = generateObstacles();
+
+function distToSegment(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 === 0 ? 0 : ((px - ax) * dx + (py - ay) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + t * dx, cy = ay + t * dy;
+  return { dist: Math.hypot(px - cx, py - cy), t, cx, cy };
+}
+
+// Deterministic fallback: nudge waypoints out of any obstacle's no-fly radius.
+function routeAroundObstacles(points, obstacles) {
+  const routed = [points[0]];
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i], b = points[i + 1];
+    const hits = [];
+    (obstacles || OBSTACLES).forEach((o) => {
+      const { dist, t, cx, cy } = distToSegment(o.lat, o.lng, a[0], a[1], b[0], b[1]);
+      const clearance = o.radius * 1.35;
+      if (dist < clearance && t > 0.02 && t < 0.98) {
+        let dx = cx - o.lat, dy = cy - o.lng;
+        const mag = Math.hypot(dx, dy) || 1e-6;
+        dx /= mag; dy /= mag;
+        hits.push({ t, point: [o.lat + dx * clearance, o.lng + dy * clearance] });
+      }
+    });
+    hits.sort((h1, h2) => h1.t - h2.t);
+    hits.forEach((h) => routed.push(h.point));
+    routed.push(b);
+  }
+  return routed;
+}
+
+function pathLength(path) {
+  let d = 0;
+  for (let i = 0; i < path.length - 1; i++) d += Math.hypot(path[i + 1][0] - path[i][0], path[i + 1][1] - path[i][1]);
+  return d;
+}
+function pointAlongPath(path, t) {
+  if (path.length === 1) return { lat: path[0][0], lng: path[0][1] };
+  const total = pathLength(path);
+  if (total === 0) return { lat: path[0][0], lng: path[0][1] };
+  let remaining = Math.max(0, Math.min(1, t)) * total;
+  for (let i = 0; i < path.length - 1; i++) {
+    const segLen = Math.hypot(path[i + 1][0] - path[i][0], path[i + 1][1] - path[i][1]);
+    if (remaining <= segLen || i === path.length - 2) {
+      const frac = segLen === 0 ? 0 : Math.min(1, remaining / segLen);
+      return { lat: path[i][0] + (path[i + 1][0] - path[i][0]) * frac, lng: path[i][1] + (path[i + 1][1] - path[i][1]) * frac };
+    }
+    remaining -= segLen;
+  }
+  return { lat: path[path.length - 1][0], lng: path[path.length - 1][1] };
+}
+
+async function planRoute(start, end) {
+  try {
+    const res = await fetch('/api/route', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ start, end, obstacles: OBSTACLES }),
+    });
+    const body = await res.json();
+    if (body.ok && Array.isArray(body.waypoints) && body.waypoints.length >= 2) {
+      return { path: body.waypoints.map((w) => [w.lat, w.lng]), source: 'llm' };
+    }
+  } catch (e) { /* fall through to geometric fallback */ }
+  return { path: routeAroundObstacles([[start.lat, start.lng], [end.lat, end.lng]]), source: 'fallback' };
+}
 
 function resolveTarget(name) {
   const hit = AO.resolvePlace(name);
@@ -125,7 +213,7 @@ async function run() {
   render();
 }
 
-function deploy(cmd) {
+async function deploy(cmd) {
   if (state.deploying) return;
   const n = Math.min(12, Math.max(1, Number.isInteger(cmd.drone_count) ? cmd.drone_count : state.count));
   const type = TYPES.find((t) => t.id === state.droneType) || TYPES[0];
@@ -135,17 +223,26 @@ function deploy(cmd) {
   const base = AO.resolveOrigin(cmd.origin) || AO.resolveOrigin('Alpha');
   const target = resolveTarget(cmd.target_sector);
   const lz = pickLZ(cmd.landing_constraint, target, base);
-  const M = 0.0016;
-  const T = { launch: 1.5, transit: 6.5, station: 10.5, land: 14, end: 15 };
   const desc = `${n} × ${type.label} · ${state.formation} → ${target.label}`;
   const formation = state.formation;
 
-  MissionMap.setMission({ target: [target.lat, target.lng], label: target.label, path: [[base.lat, base.lng], [target.lat, target.lng], [lz.lat, lz.lng]], lz: [lz.lat, lz.lng] });
   state.deploying = true;
-  state.missionLabel = desc + ' — launching';
+  state.missionLabel = desc + ' — routing (LLM planning path around obstacles)…';
   state.missionColor = C.run;
   renderMissionBanner();
   renderManualDeployButton();
+
+  const routed = await planRoute({ lat: base.lat, lng: base.lng }, { lat: target.lat, lng: target.lng });
+  const transitPath = routed.path;
+  const landPath = routeAroundObstacles([[target.lat, target.lng], [lz.lat, lz.lng]]);
+  const fullPath = transitPath.concat(landPath.slice(1));
+
+  const M = 26; // formation spacing in screen px — see MissionMap.pixelOffset
+  const T = { launch: 1.5, transit: 6.5, station: 10.5, land: 14, end: 15 };
+
+  MissionMap.setMission({ target: [target.lat, target.lng], label: target.label, path: fullPath, lz: [lz.lat, lz.lng] });
+  state.missionLabel = desc + ` — launching (route: ${routed.source === 'llm' ? 'LLM-planned' : 'geometric fallback'}, ${transitPath.length} waypoints)`;
+  renderMissionBanner();
 
   const t0 = performance.now();
   let lastPhase = 'launching';
@@ -153,9 +250,9 @@ function deploy(cmd) {
     const t = (performance.now() - t0) / 1000;
     let cx, cy, scale = 1, phase;
     if (t < T.launch) { phase = 'launching'; cx = base.lat; cy = base.lng; scale = 0.3 + 0.2 * (t / T.launch); }
-    else if (t < T.transit) { phase = 'en route'; const p = ease((t - T.launch) / (T.transit - T.launch)); cx = lerp(base.lat, target.lat, p); cy = lerp(base.lng, target.lng, p); scale = Math.min(1, 0.5 + (t - T.launch)); }
+    else if (t < T.transit) { phase = 'en route'; const p = ease((t - T.launch) / (T.transit - T.launch)); const pt = pointAlongPath(transitPath, p); cx = pt.lat; cy = pt.lng; scale = Math.min(1, 0.5 + (t - T.launch)); }
     else if (t < T.station) { phase = 'on station — ' + (cmd.task_type || 'survey'); cx = target.lat; cy = target.lng; }
-    else if (t < T.land) { phase = 'landing at ' + lz.tag; const p = ease((t - T.station) / (T.land - T.station)); cx = lerp(target.lat, lz.lat, p); cy = lerp(target.lng, lz.lng, p); scale = 1 - 0.85 * p; }
+    else if (t < T.land) { phase = 'landing at ' + lz.tag; const p = ease((t - T.station) / (T.land - T.station)); const pt = pointAlongPath(landPath, p); cx = pt.lat; cy = pt.lng; scale = 1 - 0.85 * p; }
     else {
       MissionMap.setDrones([]);
       MissionMap.setMission(null);
@@ -171,7 +268,9 @@ function deploy(cmd) {
     for (let i = 0; i < n; i++) {
       let o = offsetOf(formation, i, n, M * scale);
       if (rot) { const c = Math.cos(rot), s = Math.sin(rot); o = { x: o.x * c - o.y * s, y: o.x * s + o.y * c }; }
-      drones.push({ lat: cx + o.y, lng: cy + o.x, color: type.dot });
+      // o.y is "north-positive"; screen y grows downward, hence the flip.
+      const [lat, lng] = MissionMap.pixelOffset([cx, cy], o.x, -o.y);
+      drones.push({ lat, lng, color: type.dot });
     }
     MissionMap.setDrones(drones);
     if (phase !== lastPhase) { lastPhase = phase; state.missionLabel = desc + ' — ' + phase; renderMissionBanner(); }
@@ -623,6 +722,17 @@ function render() {
   renderMissionBanner();
 }
 
+function switchTab(name) {
+  const mission = name === 'mission';
+  $('view-mission').classList.toggle('hidden', !mission);
+  $('view-diagnostics').classList.toggle('hidden', mission);
+  $('tab-mission').classList.toggle('active', mission);
+  $('tab-diagnostics').classList.toggle('active', !mission);
+  if (mission) {
+    setTimeout(() => { const m = MissionMap.getMap(); if (m) m.invalidateSize(); }, 0);
+  }
+}
+
 // ---------- wiring ----------
 document.addEventListener('DOMContentLoaded', () => {
   MissionMap.init('map');
@@ -630,6 +740,7 @@ document.addEventListener('DOMContentLoaded', () => {
     bases: BASES.map((b) => ({ name: 'BASE ' + b.name.toUpperCase(), lat: b.lat, lng: b.lng })),
     lzs: LZS, sectors: SECTORS, perimeter: PERIMETER, landmarks: LANDMARKS,
   });
+  MissionMap.setObstacles(OBSTACLES);
 
   renderTypeOpts();
   renderFormOpts();
@@ -641,6 +752,9 @@ document.addEventListener('DOMContentLoaded', () => {
   $('run-btn').addEventListener('click', run);
   $('clear-btn').addEventListener('click', () => { state.input = ''; $('tasking').value = ''; reset(); render(); });
   $('count-slider').addEventListener('input', (e) => { state.count = parseInt(e.target.value, 10) || 1; renderCount(); });
+
+  $('tab-mission').addEventListener('click', () => switchTab('mission'));
+  $('tab-diagnostics').addEventListener('click', () => switchTab('diagnostics'));
 
   $('manual-deploy-btn').addEventListener('click', () => {
     const lastTarget = state.result && state.result.target_sector && !isFlagged() ? state.result.target_sector : 'Sector 5';
